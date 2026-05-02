@@ -878,6 +878,322 @@ Gives the CLI session file navigation and diff viewing through the IDE.
 
 ---
 
+## 14. Effective Usage — Prompting, Intent & .md Quality
+
+### Why This Matters
+Claude's output quality is a direct function of input quality. Vague prompts → vague output → more back-and-forth → more tokens wasted. One precise prompt beats three correction cycles.
+
+---
+
+### Crafting Strong Prompts
+
+#### The Signal Formula
+Every high-quality prompt contains three elements:
+
+```
+[WHAT]  + [CONTEXT]  + [CONSTRAINT]
+```
+
+| Element | Purpose | Weak | Strong |
+|---------|---------|------|--------|
+| WHAT | The task | "fix the bug" | "fix the null pointer in AuctionBidService@placeBid" |
+| CONTEXT | What Claude needs to know | (nothing) | "bid fails when user has no wallet balance record" |
+| CONSTRAINT | Output boundaries | (nothing) | "only edit the service, not the controller; no new methods" |
+
+**Weak prompt:**
+```
+Fix the auction bid issue
+```
+
+**Strong prompt:**
+```
+AuctionBidService::placeBid() throws "Undefined index: balance" when 
+the user's wallet record doesn't exist. Fix: return a validation error 
+instead of crashing. Edit only AuctionBidService — don't touch the controller.
+```
+
+Same task. Strong prompt skips one full correction cycle (~2,000 tokens saved).
+
+---
+
+#### Define Scope Explicitly
+Claude defaults to being thorough. Without scope, it refactors things you didn't ask to touch.
+
+```
+# Bad — Claude might rewrite the entire file
+"Improve the AuctionController"
+
+# Good — Claude changes exactly what you need
+"In AuctionController::store(), add validation that auction_end_date 
+is in the future. Don't change any other methods."
+```
+
+**Scope keywords that constrain output:**
+- `Only edit X` — restricts file scope
+- `Don't change Y` — explicit exclusion
+- `Return only the function, not the whole file` — constrains output format
+- `No new methods/classes` — architecture constraint
+- `Minimal change` — prevents over-engineering
+
+---
+
+#### State the Desired Output Format
+Claude adjusts format to match what you ask for.
+
+| You want | Say it |
+|----------|--------|
+| Just the code | "Return only the updated function" |
+| Explanation too | "Return the fix with a one-line explanation of why" |
+| A diff | "Show only what changed, in diff format" |
+| A list | "List the files you'd change and why, before changing anything" |
+| A plan first | "Describe your approach before making any edits" |
+
+**Ask for a plan before edits on complex tasks:**
+```
+Before editing anything: list the files you'll touch and what you'll 
+change in each. Wait for my approval.
+```
+Prevents expensive wrong-direction work.
+
+---
+
+#### Attach Relevant Context with `@`
+Don't describe files — attach them.
+
+```
+# Bad — Claude has to guess or search
+"Update the bid placement to match our API response format"
+
+# Good — Claude sees the exact format
+@Modules/Auction/Http/Resources/BidResource.php
+Update AuctionBidService::placeBid() to return a response 
+matching the BidResource structure above.
+```
+
+**Rules for `@` attachments:**
+- Attach the specific file, not the whole module
+- Attach the interface when asking Claude to implement it
+- Attach the failing test when asking Claude to fix it
+- Attach the migration when asking Claude to write a model
+
+---
+
+#### Give Error Context, Not Just Symptoms
+
+```
+# Bad
+"The auction bid isn't working"
+
+# Good
+"php artisan auction:process-bids throws:
+  ErrorException: Undefined property: stdClass::$reserve_price
+  in AuctionJobService.php line 87
+  
+reserve_price was renamed to minimum_bid in migration 2026_04_15.
+Fix the reference in AuctionJobService — don't alter the migration."
+```
+
+Paste the exact error. State what you already know. Claude skips the diagnosis phase.
+
+---
+
+### Structuring High-Quality .md Files
+
+Applies to: CLAUDE.md, rules files, skills, memory files, and module-level instructions.
+
+#### The Three-Layer Structure
+
+Every .md instruction file should have:
+
+```
+1. WHAT (one-line statement of the rule/purpose)
+2. HOW (specific, actionable steps or patterns)
+3. EDGE CASES (what NOT to do, exceptions)
+```
+
+**Weak rule:**
+```markdown
+# API Rules
+Make sure APIs follow good practices and return proper responses.
+```
+
+**Strong rule:**
+```markdown
+# Auction API Conventions
+
+All auction API responses MUST include:
+- `auction_status` (string: open|closed|cancelled)
+- `bid_count` (int)
+- `current_price` (float, null if no bids)
+
+Use `AuctionResource` to format — never build arrays manually in controllers.
+
+Do NOT: add fields not in AuctionResource. Do NOT: query AuctionProduct directly;
+use AuctionRepository.
+```
+
+Same intent. Strong version produces consistent output on first try.
+
+---
+
+#### Use Imperative, Not Suggestive Language
+
+| Weak (suggestive) | Strong (imperative) |
+|-------------------|-------------------|
+| "You should probably use..." | "Use X" |
+| "It's a good idea to..." | "Always do X" |
+| "Try to avoid..." | "Never do X" |
+| "Consider checking..." | "Check X before Y" |
+
+Claude follows instructions literally. Hedging language = hedging behavior.
+
+---
+
+#### Structure Rules as Conditions, Not Prose
+
+```markdown
+# Bad — prose Claude has to interpret
+When working with the auction module, you need to be careful about 
+how you handle the payment flows because they interact with the 
+wallet system in ways that can cause issues...
+
+# Good — conditions Claude can follow precisely
+When editing payment flows in Modules/Auction/:
+- ALWAYS update wallet balance atomically (DB transaction)
+- NEVER deduct balance before verifying auction is still open
+- On failure: refund via WalletService::refund(), log with AuditLogger
+```
+
+---
+
+#### Keep Files Focused on One Concern
+
+| File | One concern |
+|------|------------|
+| `rules/translate.md` | Blade translation only |
+| `rules/response-style.md` | Output format only |
+| `Modules/Auction/CLAUDE.md` | Auction-specific patterns only |
+
+Mixed concerns = Claude applies the wrong rule in the wrong context.
+
+---
+
+#### Frontmatter for Path-Scoped Rules
+
+Use `paths:` when a rule only applies to specific files:
+
+```markdown
+---
+paths:
+  - "Modules/Auction/**/*.php"
+  - "routes/rest_api/**/*.php"
+---
+
+# Auction + API rules only
+These rules load ONLY when editing Auction or API route files.
+Everything else ignores this file.
+```
+
+Without `paths:`, the rule loads on every request — even when irrelevant.
+
+---
+
+### Defining Clear Intent Upfront
+
+#### The Intent Declaration Pattern
+Start complex sessions with a single declaration block:
+
+```
+GOAL: Add rate limiting to auction bid placement API
+SCOPE: Modules/Auction/Http/Controllers/V1/CustomerAuctionController.php only
+APPROACH: Use Laravel's built-in throttle middleware, not custom logic
+DONE WHEN: POST /auction/bid returns 429 after 5 requests/minute per user
+DO NOT: Change bid logic, touch other controllers, add new middleware classes
+```
+
+Takes 10 seconds to write. Eliminates 3–4 rounds of correction.
+
+---
+
+#### Reference the Pattern, Not the Explanation
+
+If your project has established patterns, tell Claude to match them — don't re-explain the pattern.
+
+```
+# Bad — wastes tokens explaining what Claude can read
+"Use our repository pattern where you create an interface in 
+app/Contracts/Repositories/, then an implementation in app/Repositories/..."
+
+# Good — Claude reads the existing pattern itself
+"Add AuctionWatchlistRepository following the same pattern as 
+AuctionBidRepository. Generate with: php artisan generate:entity AuctionWatchlist"
+```
+
+---
+
+#### Session Intent vs. Task Intent
+
+| Level | Set at | How |
+|-------|--------|-----|
+| Session | Start of conversation | "For this session: we're refactoring the Auction payment flow. Read-only first, then propose changes." |
+| Task | Each prompt | "Now: extract the wallet deduction into WalletDeductionService." |
+
+Setting session intent once means you don't repeat context in every message.
+
+---
+
+### Token-Efficient Prompt Patterns
+
+#### Pattern 1 — File + Instruction (not description)
+```
+@app/Services/AuctionBidService.php
+Extract the balance check logic (lines 45–67) into a private method 
+`validateBuyerBalance()`. No other changes.
+```
+
+#### Pattern 2 — Error + Known Cause + Fix Constraint
+```
+Error: "Call to undefined method AuctionBid::scopeActive()"
+Cause: scope was removed in last refactor, now use status='active' directly.
+Fix: update all ->active() calls in AuctionBidService to ->where('status','active').
+Don't add the scope back.
+```
+
+#### Pattern 3 — Output-First Specification
+```
+I need a function that:
+- Input: auction_id, user_id
+- Returns: ['can_bid' => bool, 'reason' => string|null]
+- Reads from: AuctionRepository, UserRepository
+- No DB calls directly
+
+Write only the function. Add it to AuctionEligibilityService.
+```
+
+#### Pattern 4 — Parallel Tasks (saves session time)
+```
+Do these in parallel:
+1. Find all places AuctionProduct is queried directly (not via repo) — list file:line
+2. Find all Auction routes missing `auth:api` middleware — list route name + file
+Report both before making any changes.
+```
+
+---
+
+### Anti-Patterns to Avoid
+
+| Anti-pattern | Problem | Fix |
+|-------------|---------|-----|
+| "Fix it" with no context | Claude guesses wrong scope | Add file, line, error |
+| "Improve this code" | Claude rewrites things you didn't want changed | State exactly what to improve |
+| Asking and then correcting repeatedly | 3× token cost vs. one precise prompt | Write the intent declaration first |
+| Pasting 500 lines "for context" | Fills context unnecessarily | `@file` the specific file instead |
+| "Make it better" after Claude does something wrong | Claude doesn't know what "better" means | State the specific failure: "the rate limit resets per session not per user" |
+| Long chat history on unrelated tasks | Old context bleeds into new tasks | `/clear` between unrelated tasks |
+| Asking Claude to explain what it just did | You can read the diff | Skip the summary request |
+
+---
+
 ## Quick Reference — "What do I use for X?"
 
 | Goal | Tool |
